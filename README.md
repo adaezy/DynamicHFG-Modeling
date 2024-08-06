@@ -41,13 +41,22 @@ For water infrastructure simulations, use the following command. It specifies se
 
 ### Additional Information
 Graph File: The community_hfg_model.graphml file contains the network structure needed for the simulations.
+
 Parameter Details:
 --infra: Specifies the type of infrastructure (e.g., power, water).
---alpha: Ordering metrics used (s -social vulnerability, c -criticality, sc- weighted social vulnerability and criticality ).
+
+--alpha: Ordering metrics used (s -social vulnerability, c -criticality, sc- weighted social vulnerability and criticality).
+
 --time-steps: Defines the number of time steps in the simulation.
+
 --mean: rate parameter value used in transition probability matrix calculation.
+
 --num-crews: Number of crews available for repairs.
+
 --failed-nodes: Nodes that have failed at the start of the simulation.
+
 --dns-dicts: Demand not served for each consumption functionality in power simulation.
+
 --sims: Number of simulation iterations.
+
 --ratio: Ratios used for weighted metric sc.
