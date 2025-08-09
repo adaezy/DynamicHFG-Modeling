@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd"><key id="d15" for="node" attr.name="Water_Total_Load" attr.type="int"/>
 <key id="d14" for="node" attr.name="Storage_Capacity" attr.type="int"/>
-<key id="d13" for="node" attr.name="Criticality" attr.type="double"/>
+<key id="d13" for="node" attr.name="color" attr.type="double"/>
 <key id="d12" for="node" attr.name="Water_Capacity" attr.type="int"/>
 <key id="d11" for="node" attr.name="Power_Total_Load" attr.type="int"/>
 <key id="d10" for="node" attr.name="SVS" attr.type="double"/>
