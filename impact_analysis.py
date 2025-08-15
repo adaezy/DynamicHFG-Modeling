@@ -39,35 +39,39 @@ def average_repair_plots(average_time_to_repair_failed,failed_nodes,failed_indic
 
 
 
-def average_number_functionalities_over_time(cascade_result,failed_indices_dict,order):
+def average_number_functionalities_over_time(cascade_result, failed_indices_dict, order):
     """
-    Plot of Average Number of Functionalities Affected Over Time(By Metric)
+    Plot of Average Number of Functionalities Affected Over Time (By Metric)
     :param cascade_result:
     :return:
     """
     fontsize = 20
-    # Plotting for number of functionalities over time
+    plt.figure(figsize=(12, 8))
 
-    # Plotting
-    plt.figure(figsize=(12, 8))  # Increase figure size for better visibility
+    # Collect all time values to determine max timestep
+    all_times = set()
+    for time_nodes in cascade_result.values():
+        all_times.update(time_nodes.keys())
+    max_time = max(all_times)
+
+    # Plot each failure scenario
     for key, time_nodes in cascade_result.items():
         times = list(time_nodes.keys())
         node_counts_values = list(time_nodes.values())
         plt.plot(times, node_counts_values, label=f'{failed_indices_dict[key]}')
 
-    plt.xlabel('Time', fontsize=fontsize)  # Increase font size for axis labels
-    plt.ylabel('Average Number of Functionalities', fontsize=fontsize)
+    plt.xlabel('Simulation Timestep', fontsize=fontsize)
+    plt.ylabel('Functionality Loss', fontsize=fontsize)
 
-    #plt.title(f'Average Number of Functionalities Affected Over Time(Total Repair Order by {order})', fontsize=fontsize)
-    plt.xticks(fontsize=18)  # Increase font size for x-axis ticks
-    plt.yticks([0, 2, 4, 6, 8,10], fontsize=18)  #TODO: Remove later
-    #plt.yticks(fontsize=18)
-    plt.legend(fontsize=14)  # Increase font size for legend
-    plt.grid(True, linestyle='--', alpha=0.7)  # Add grid lines for better readability
-    plt.tight_layout()  # Adjust layout to prevent overlap
-    plt.savefig(f'power_average_functionalities_over_time_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
+    # Set integer ticks using plt.xticks
+    plt.xticks(range(0, max_time + 1), fontsize=18)  # Integer ticks only
+
+    plt.yticks([0, 2, 4, 6, 8, 10], fontsize=18)  # Optional: tune for your data
+    plt.legend(fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(f'power_average_functionalities_over_time_{order}.png', dpi=300, bbox_inches='tight')
     plt.show()
-
 
 
 def average_time_outages_by_location_before_repair(average_time_to_repair_failed,graph, community,order):
