@@ -6,18 +6,8 @@ from collections import OrderedDict
 
 
 
-def update_current(current, dependence_dict, not_fixed):
-    updated_current = []
-    for curr in current:
-        current_dep = dependence_dict[curr]
-        for node in current_dep:
-            if node in not_fixed:
-                updated_current.append(node)
-                updated_current.remove(curr)
-                break
-            else:
-                updated_current.append(curr)
-    return updated_current
+# NOTE: update_current was removed — it contained a ValueError bug (removing
+# items never added to the list) and was superseded by update_current_recursive.
 
 
 def dependency_information_hfg(dependency_matrix):
@@ -111,27 +101,37 @@ def flatten(alist):
 
 def get_action_rule(hfg):
     """
-    this is a topological ordering
+    Iterative topological sort (replaces recursive DFS to avoid
+    Python RecursionError on large graphs).
     """
-
-    def dfs(node):
-        visited[node] = True
-        for neighbor in range(len(hfg)):
-            if hfg[node][neighbor] == 1 and not visited[neighbor]:
-                dfs(neighbor)
-        action_rule.insert(0, node)
-
     num_nodes = len(hfg)
     visited = [False] * num_nodes
     action_rule = []
+    stack = []
 
     for node in range(num_nodes):
         if not visited[node]:
-            dfs(node)
+            stack.append((node, False))
+            while stack:
+                n, processed = stack.pop()
+                if processed:
+                    action_rule.insert(0, n)
+                    continue
+                if visited[n]:
+                    continue
+                visited[n] = True
+                stack.append((n, True))
+                for neighbor in range(num_nodes):
+                    if hfg[n][neighbor] == 1 and not visited[neighbor]:
+                        stack.append((neighbor, False))
 
     return action_rule
 
-def update_graph(alpha,graph,consumer_path_dict):
+def update_graph(alpha, graph, consumer_path_dict):
+    # CRITICAL FIX: deep copy to prevent mutation of the shared graph
+    # object across Monte Carlo simulation runs.
+    import copy
+    graph = copy.deepcopy(graph)
 
     if alpha == "s":
         svs = defaultdict(int)
@@ -244,8 +244,6 @@ def get_action_rule_metrics(graph, start_node, node_metrics,alpha,consumer_path_
             for neighbor in neighbors:
                 queue.append((neighbor, level + 1))
 
-    sorted_vals = [node for level_nodes in sorted_nodes for node in level_nodes]
-
     new_results = []
     for i, v in level_dictionary.items():
         neighbors = sorted(v, key=lambda x: graph.nodes[x][node_metrics], reverse=True)
@@ -286,7 +284,6 @@ def get_action_rule_metrics_weighted(graph, start_node, metric1, metric2, weight
             for neighbor in neighbors:
                 queue.append((neighbor, level + 1))
 
-    #sorted_vals = [node for level_nodes in sorted_nodes for node in level_nodes]
     new_results = []
     for i, v in level_dictionary.items():
         # combined_metric = weights[0] * graph.nodes[node][metric1] + weights[1] * graph.nodes[node][metric2]
@@ -546,7 +543,6 @@ def find_paths_with_same_type_and_community(graph, source_nodes):
     paths_dict = {}
 
     # Perform BFS traversal from each source node
-    print("source_nodes",source_nodes)
     for source_node_index in source_nodes:
         source_node = get_source_node_by_index(graph, source_node_index)
         visited = set()  # Set to keep track of visited nodes
@@ -583,7 +579,8 @@ def find_paths_with_same_type_and_community(graph, source_nodes):
 
 
 def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, action_rule, probs,
-                                    consumer_dicts,consumer_path_dict,failed_indices,water_storages,criticality):
+                                    consumer_dicts, consumer_path_dict, failed_indices,
+                                    water_storages, criticality, refill_quantity=4500):
     """
 
     :param damage:
@@ -596,10 +593,7 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
     :param demand_list: This could be Demand not served in Power
     :return:
     """
-    # dns_dict = {}
-    # for key, each in zip(consumer_dicts.keys(), demand_list):
-    #     dns_dict[key] = each
-
+    MAX_STEPS = len(probs[2]) * 10  # convergence guard
     time_step = 1
     next_damage = damage.copy()
     new_states = [0] * ((action_rule[-1]) + 1)
@@ -611,8 +605,9 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
     not_fixed = [i for i, v in enumerate(next_damage) if v == 1]
 
     while new_states != initial_states:
-        # for i in not_fixed:
-        #     damage_times[i] += 1
+        if time_step > MAX_STEPS:
+            print(f"Warning: water simulation did not converge after {MAX_STEPS} steps. Stopping.")
+            break
 
         current = get_current(action_rule, num_crew, next_damage)
 
@@ -663,7 +658,18 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
         not_fixed = [i for i, v in enumerate(next_damage) if v == 1]
         calculate_state.append(new_states)
 
-    rem_node = [0, 1, 2]
+    # Dynamically compute upstream backbone nodes to exclude from calculate_state2.
+    # These are nodes that appear in the action_rule only because they are on the
+    # path FROM the source (e.g. WTP) TO the failed nodes — they are never consumer
+    # service nodes and never become non-functional in the simulation.
+    # consumer_path_dict values contain all indices on downstream paths
+    # (from failed nodes to community consumers), so any action_rule node NOT in
+    # those values is an upstream backbone node that should be excluded.
+    consumer_path_all_indices = set()
+    for path_set in consumer_path_dict.values():
+        consumer_path_all_indices.update(path_set)
+    rem_node = set(i for i in action_rule if i not in consumer_path_all_indices)
+
     calculate_state2 = {each: [] for each in range(len(calculate_state))}
 
     count = 0
@@ -711,7 +717,7 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
 
     first_key = next(iter(calculate_state2))
     del calculate_state2[first_key]
-    refill_quantity = 4500
+    # refill_quantity is now a parameter (default 4500 litres, matching paper Section V)
 
     # Calculate total load and DNS over time
     for ts, failed_nodes in calculate_state2.items():
@@ -787,7 +793,8 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
         # Save dict_community_usage for the current time step
         community_usage_over_time[ts] = dict_community_usage
 
-    ts += 1 #Make up the timestep for initial storage in dictionary of storage
+    # Guard against UnboundLocalError when calculate_state2 is empty
+    ts = (ts + 1) if calculate_state2 else 1
 
 
     return new_states, ts, calculate_state2, storage_values_over_time,time_failure,community_usage_over_time,consumer_path_dict
@@ -795,7 +802,12 @@ def simulate_damage_evolution_water(damage, initial_states, hfg, num_crew, actio
 #Calculate_State2 {0: [34, 36], 1: [34, 35, 36, 37], 2: [34, 35, 36, 37, 40, 42, 44, 46, 48, 50, 52], 3: [34, 35, 37, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], 4: [35, 37, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], 5: [35, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], 6: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], 7: [40, 41, 42, 43, 44, 45, 46, 47, 49, 50, 51, 52, 53], 8: [40, 41, 42, 43, 44, 45, 46, 47, 49, 51, 52, 53], 9: [40, 41, 42, 43, 44, 45, 46, 47, 49, 51, 53], 10: [41, 42, 43, 44, 45, 46, 47, 49, 51, 53], 11: [41, 43, 44, 45, 46, 47, 49, 51, 53], 12: [41, 43, 45, 46, 47, 49, 51, 53], 13: [41, 43, 45, 47, 49, 51, 53], 14: [41,
 
 def simulate_damage_evolution_power(damage, initial_states, hfg, num_crew, action_rule, probs,
-                              consumer_dicts, demand_list,consumer_path_dict,failed_indices):
+                              consumer_dicts, demand_list, consumer_path_dict, failed_indices,
+                              consumer_node_names=None):
+    # consumer_node_names: dict of {node_index: resource_name} for all consumer nodes.
+    # Used to match --dns-dicts entries by name rather than by position.
+    if consumer_node_names is None:
+        consumer_node_names = {}
     """
 
     :param damage:
@@ -809,10 +821,21 @@ def simulate_damage_evolution_power(damage, initial_states, hfg, num_crew, actio
     :return:
     """
 
+    # Build dns_dict by matching resource names from the graph to consumer indices.
+    # demand_list is a dict of {ResourceName: dns_value} passed from execute_simulation.
+    # Matching by name (not position) means BFS traversal order does not matter.
     dns_dict = {}
-    for key,each in zip(consumer_dicts.keys(), demand_list):
-        dns_dict[key] = each
+    for node_index, node_name in consumer_node_names.items():
+        resource = node_name  # resource name from the graph e.g. 'Hospital1'
+        if resource in demand_list:
+            dns_dict[node_index] = demand_list[resource]
+        else:
+            raise ValueError(
+                f"Consumer node '{resource}' (index {node_index}) has no entry in --dns-dicts. "
+                f"Add '{resource}:<value>' to your --dns-dicts argument."
+            )
 
+    MAX_STEPS = len(probs[2]) * 10  # convergence guard: 10x the transition matrix size
     time_step = 1
     next_damage = damage.copy()
     new_states = [0] * ((action_rule[-1]) + 1)
@@ -824,6 +847,9 @@ def simulate_damage_evolution_power(damage, initial_states, hfg, num_crew, actio
     not_fixed = [i for i, v in enumerate(next_damage) if v == 1]
 
     while new_states != initial_states:
+        if time_step > MAX_STEPS:
+            print(f"Warning: power simulation did not converge after {MAX_STEPS} steps. Stopping.")
+            break
         # for i in not_fixed:
         #     damage_times[i] += 1
 
@@ -876,7 +902,18 @@ def simulate_damage_evolution_power(damage, initial_states, hfg, num_crew, actio
         not_fixed = [i for i, v in enumerate(next_damage) if v == 1]
         calculate_state.append(new_states)
 
-    rem_node = [0, 1, 2]
+    # Dynamically compute upstream backbone nodes to exclude from calculate_state2.
+    # These are nodes that appear in the action_rule only because they are on the
+    # path FROM the source (e.g. Gen1) TO the failed nodes — they are never consumer
+    # service nodes and never become non-functional in the simulation.
+    # consumer_path_dict values contain all indices on downstream paths
+    # (from failed nodes to community consumers), so any action_rule node NOT in
+    # those values is an upstream backbone node that should be excluded.
+    consumer_path_all_indices = set()
+    for path_set in consumer_path_dict.values():
+        consumer_path_all_indices.update(path_set)
+    rem_node = set(i for i in action_rule if i not in consumer_path_all_indices)
+
     calculate_state2 = {each: [] for each in range(len(calculate_state))}
     count = 0
     for each in calculate_state:
@@ -887,32 +924,44 @@ def simulate_damage_evolution_power(damage, initial_states, hfg, num_crew, actio
         count += 1
 
 
-    # Calculate DNS and total load over time
-    total_dns_over_time = {}
+    # Calculate DNS and Total Load over the simulation period.
+    #
+    # CORRECT DEFINITION (matches paper Section III.B):
+    #   Total Load = what the community would have consumed had everything worked
+    #              = consumer_dicts[node] * total_simulation_timesteps   (constant)
+    #   DNS        = load that could NOT be served because the node was failed
+    #              = dns_dict[node] * number_of_timesteps_node_was_failed (varies by strategy)
+    #
+    # Dividing gives:  DNS/Total_Load = (dns_dict/consumer_dicts) * (T_failed / T_total)
+    # This ratio correctly changes with repair ordering because faster repairs
+    # reduce T_failed, reducing the fraction of unserved demand.
+    #
+    # PREVIOUS BUG: both DNS and Total Load were accumulated only while the node
+    # was failed, so T_failed cancelled out and the ratio was always the constant
+    # dns_dict[node]/consumer_dicts[node] — identical regardless of repair strategy.
+
+    total_timesteps = len(calculate_state2)  # total simulation steps for this run
+
+    total_dns_over_time = {node: 0 for node in consumer_dicts.keys()}
     total_load_over_time = {}
 
-    # Initialize dictionaries for each node
+    # Total Load: full potential load over every timestep, independent of failure status
     for node in consumer_dicts.keys():
-        total_dns_over_time[node] = 0
-        total_load_over_time[node] = 0
+        total_load_over_time[node] = consumer_dicts[node] * total_timesteps
 
-    for failed_nodes in calculate_state2.values():
-        for node in failed_nodes:
-            if node in consumer_dicts:
-                total_load_over_time[node] += consumer_dicts[node]
-                if node in dns_dict:
-                    total_dns_over_time[node] += dns_dict[node]
+    # DNS: accumulates only during timesteps the node was actually failed
+    for timestep_failed_nodes in calculate_state2.values():
+        for node in timestep_failed_nodes:
+            if node in consumer_dicts and node in dns_dict:
+                total_dns_over_time[node] += dns_dict[node]
 
     dns_loss_vals = {}
-    for i, v in total_dns_over_time.items():
-        if v != 0 and total_load_over_time[i] != 0:
-            val = v / total_load_over_time[i]
+    for node, dns_val in total_dns_over_time.items():
+        total_load = total_load_over_time[node]
+        if total_load > 0:
+            dns_loss_vals[node] = dns_val / total_load
         else:
-            val = 0
-        dns_loss_vals[i] = val
-
-
-
+            dns_loss_vals[node] = 0
 
     return new_states, time_step, calculate_state2, dns_loss_vals
 
@@ -962,6 +1011,7 @@ def find_paths_to_failed_nodes(graph, source_nodes, destination_nodes):
 
 
 def execute_simulation(infra, alpha, graph, predetermined_steps, lambda_parameter, num_crew, failed_nodes,dns_dict,ratio=[0.4,0.6]):
+    print("running simulation for infra:", infra, "alpha:", alpha)
     """
 
     """
@@ -1005,7 +1055,7 @@ def execute_simulation(infra, alpha, graph, predetermined_steps, lambda_paramete
     paths_to_failed_index = list(set(get_all_paths_index(paths_to_failed,graph)))
 
 
-    correct_paths = list(set(paths_to_failed_index + all_paths_index))
+    correct_paths = sorted(set(paths_to_failed_index + all_paths_index))  # sorted: guarantees [-1] is the max index
 
 
     last_node = correct_paths[-1] + 1
@@ -1022,27 +1072,47 @@ def execute_simulation(infra, alpha, graph, predetermined_steps, lambda_paramete
     for i in failed_indices:
         initial_damage_array[i] = 1
 
+    print("failed indices:", failed_indices)
     # predetermined_steps = 20
     transition_matrix = get_transition_matrix(predetermined_steps, lambda_parameter)
 
+    # Select the correct BFS start node based on infrastructure type.
+    # Using the wrong start node (e.g. power node for water) traverses
+    # the wrong portion of the dependency graph.
+    #
+    # NOTE: "treats 'water' at 'WaterTreatmentPlant1'" is the correct water
+    # root — it has 3 outgoing edges (one per water storage tank) matching
+    # Figure 2 in the paper. A generic 'WaterTreatmentPlant' string search
+    # is NOT used here because the graph contains 5 nodes with that substring,
+    # and the first match is a power-transport node, not the water root.
+    if infra == 'power':
+        bfs_start_node = "generates 'power' at 'Generator1'"
+    elif infra == 'water':
+        bfs_start_node = "treats 'water' at 'WaterTreatmentPlant1'"
+    else:
+        bfs_start_node = "generates 'power' at 'Generator1'"
+
     if alpha == 'sc':
-        action = get_action_rule_metrics_weighted(graph, "generates 'power' at 'Generator1'", "SVS", "Criticality",
-                                              ratio,alpha,consumer_path_dict)
+        action = get_action_rule_metrics_weighted(graph, bfs_start_node, "SVS", "Criticality",
+                                              ratio, alpha, consumer_path_dict)
 
     elif alpha == 's':
-        action = get_action_rule_metrics(graph, "generates 'power' at 'Generator1'", "SVS",alpha,\
+        action = get_action_rule_metrics(graph, bfs_start_node, "SVS", alpha,
                                          consumer_path_dict)
 
     elif alpha == 'c':
-        action = get_action_rule_metrics(graph, "generates 'power' at 'Generator1'", "Criticality",alpha,\
+        action = get_action_rule_metrics(graph, bfs_start_node, "Criticality", alpha,
                                          consumer_path_dict)
 
     else:
         action = get_action_rule(hfg_new)
 
     action_rule = get_power_action(action, correct_paths)
+    #print("action_rule", action_rule)
 
     total_demand_dicts = {}
+    # consumer_node_names maps node_index -> resource name for DNS name-based lookup
+    consumer_node_names = {}
     for i, z in zip(consumer_list, consumer_list_index):
         if infra == 'power':
             total_demand_dicts[z] = graph.nodes[i]['Power_Total_Load']
@@ -1050,6 +1120,7 @@ def execute_simulation(infra, alpha, graph, predetermined_steps, lambda_paramete
             total_demand_dicts[z] = graph.nodes[i]['Water_Total_Load']
         else:
             pass
+        consumer_node_names[z] = graph.nodes[i]['resource']
 
 
     water_storages_dict = {}
@@ -1089,7 +1160,9 @@ def execute_simulation(infra, alpha, graph, predetermined_steps, lambda_paramete
         new_states, time_step, calculate_state2, dns_loss_vals = simulate_damage_evolution_power(initial_damage_array,
                                                                                        initial_state, hfg_new, num_crew,
                                                                                        action_rule, transition_matrix,
-                                                                                       total_demand_dicts, dns_dict,consumer_path_dict,failed_indices)
+                                                                                       total_demand_dicts, dns_dict,
+                                                                                       consumer_path_dict, failed_indices,
+                                                                                       consumer_node_names=consumer_node_names)
         return new_states, time_step, failed_indices, calculate_state2, dns_loss_vals, consumer_list_index
 
     elif infra == "water":

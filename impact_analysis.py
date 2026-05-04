@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend — saves figures to files without showing windows
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -32,7 +34,6 @@ def average_repair_plots(average_time_to_repair_failed,failed_nodes,failed_indic
     plt.grid(axis='y', linestyle='--', alpha=0.7)  # Add grid lines for better readability
     plt.tight_layout()  # Adjust layout to prevent overlap
     plt.savefig(f'power_average_repair_time_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
 
 
 
@@ -71,7 +72,6 @@ def average_number_functionalities_over_time(cascade_result, failed_indices_dict
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.tight_layout()
     plt.savefig(f'power_average_functionalities_over_time_{order}.png', dpi=300, bbox_inches='tight')
-    plt.show()
 
 
 def average_time_outages_by_location_before_repair(average_time_to_repair_failed,graph, community,order):
@@ -169,7 +169,6 @@ def average_time_outages_by_location_before_repair(average_time_to_repair_failed
     ax.legend(fontsize=14)
     plt.tight_layout()
     plt.savefig(f'power_average_outage_times_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
 
 
 
@@ -262,7 +261,6 @@ def proportion_dns_over_load(cumm_dns_load,graph,community,order):
 
     plt.ylabel('DNS/Total Load(%)', fontsize=fontsize)
     plt.savefig(f'power_dns_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
 
 
 
@@ -291,7 +289,6 @@ def water_storage_available_over_time(graph, storage_values_over_time,order):
     #plt.title(f'Average Water Storage Levels Over Time(Total Repair Order by {order})')
     plt.legend()
     plt.savefig(f'average_water_storage_level_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
 
 
 def water_infratructure_failure_over_time(graph, time_failure,order,sims):
@@ -313,7 +310,6 @@ def water_infratructure_failure_over_time(graph, time_failure,order,sims):
     plt.ylabel(f'Average Time to Repair')
     #plt.title(f'Average Time to Repair for each Node in {sims} simulations(order by {order})')
     plt.savefig(f'average_repair_time_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
 
 
 def get_community_usage_over_time(graph,total_usage_per_node,community,consumer_path_dict,order):
@@ -410,4 +406,130 @@ def get_community_usage_over_time(graph,total_usage_per_node,community,consumer_
     plt.ylabel('Total Water Available/Total Demand')
     #plt.title(f'Ratio of Total Water Available over Total Demand for Each Community(Order by {order})')
     plt.savefig(f'average_water_availiabilty_{order}.png', dpi=300, bbox_inches='tight')  # Save as high-resolution image
-    plt.show()
+
+
+def plot_water_availability_grouped(results_by_alpha, graph, community, consumer_path_dict,
+                                    primary_alpha=None):
+    """
+    Produces Figure 14 from the paper:
+    Grouped bar chart of Total Water Available / Total Demand per community,
+    with one bar group per community and one bar per repair ordering metric.
+
+    :param results_by_alpha: dict of {alpha_label: total_usage_per_node}
+        e.g. {"Criticality": {...}, "SVS": {...}, "SVS and Criticality": {...}}
+        Each value is the ratio_usage dict from main.py (node_index -> ratio value)
+    :param graph: NetworkX graph
+    :param community: list of community consumer node indices
+    :param consumer_path_dict: dict mapping failed node indices to downstream path indices
+    :param primary_alpha: optional label of the primary alpha (used in filename so
+        each run saves a separately named file for comparison e.g.
+        water_availability_grouped_Criticality.png)
+    """
+    import numpy as np
+
+    fontsize = 20
+
+    # Build rep_ind: node_index -> resource_name
+    rep_ind = {}
+    for idx, (node, data) in enumerate(graph.nodes(data=True)):
+        if idx in community:
+            rep_ind[idx] = data['resource']
+
+    # Build SVS lookup
+    svs_dict = {}
+    for each, vals in graph.nodes(data=True):
+        for x in community:
+            if x == vals['index']:
+                svs_dict[x] = vals['SVS']
+
+    # Build all_comms_dict: community_name -> [node_indices]
+    all_comms_dict = {}
+    for idx, (node, data) in enumerate(graph.nodes(data=True)):
+        if idx in community:
+            cc = list(data.keys())[1]
+            if cc not in all_comms_dict:
+                all_comms_dict[cc] = []
+            all_comms_dict[cc].append(idx)
+
+    # Build pipeline_to_community mapping: resource_name -> community_name
+    pipeline_to_community = {}
+    for comm_name, nodes in all_comms_dict.items():
+        for node in nodes:
+            for key, value in consumer_path_dict.items():
+                if node in value:
+                    pipeline_to_community[rep_ind[node]] = comm_name
+
+    # For each alpha, aggregate ratios by community
+    # community_results: {alpha_label: {community_name: aggregated_ratio}}
+    community_results = {}
+    for alpha_label, total_usage_per_node in results_by_alpha.items():
+        per_community = {}
+        for node_idx, ratio_val in total_usage_per_node.items():
+            if node_idx not in rep_ind:
+                continue
+            resource = rep_ind[node_idx]
+            comm = pipeline_to_community.get(resource)
+            if comm is None:
+                continue
+            if comm in per_community:
+                per_community[comm] += ratio_val
+            else:
+                per_community[comm] = ratio_val
+        community_results[alpha_label] = per_community
+
+    # Get consistent community order
+    all_communities = sorted(set(
+        c for pc in community_results.values() for c in pc.keys()
+    ))
+    alpha_labels = list(results_by_alpha.keys())
+    n_communities = len(all_communities)
+    n_alphas = len(alpha_labels)
+
+    # Bar positions
+    bar_width = 0.25
+    group_gap = 0.1
+    x = np.arange(n_communities) * (n_alphas * bar_width + group_gap)
+
+    bar_colors = ['r', 'b', 'g']
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    for i, (alpha_label, color) in enumerate(zip(alpha_labels, bar_colors)):
+        vals = [community_results[alpha_label].get(c, 0) for c in all_communities]
+        offsets = x + i * bar_width
+        bars = ax.bar(offsets, vals, bar_width, color=color,
+                      edgecolor='black', label=alpha_label)
+        # Annotate bar values
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f'{val:.2f}',
+                    ha='center', va='bottom', fontsize=12)
+
+    # Add SVS annotations on x-axis labels
+    svs_community = {}
+    for node_idx, svs_val in svs_dict.items():
+        if node_idx in rep_ind:
+            resource = rep_ind[node_idx]
+            comm = pipeline_to_community.get(resource)
+            if comm:
+                svs_community[comm] = svs_val
+
+    tick_labels = [f"{c}\nSVS={svs_community.get(c, '')}" for c in all_communities]
+    ax.set_xticks(x + bar_width * (n_alphas - 1) / 2)
+    ax.set_xticklabels(tick_labels, fontsize=16)
+    # Dynamic y-axis: max bar value + 25% headroom so labels always fit
+    all_vals = [v for pc in community_results.values() for v in pc.values()]
+    max_val = max(all_vals) if all_vals else 3.0
+    ax.set_ylim(0, max_val * 1.25)
+
+    ax.set_ylabel('Total Water Available / Total Demand', fontsize=fontsize)
+    ax.set_xlabel('', fontsize=fontsize)
+    ax.legend(fontsize=14, loc='upper right')
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+
+    # Save with primary_alpha label in filename so each run produces a
+    # separately named file — makes it easy to compare runs side by side.
+    suffix = f'_{primary_alpha}' if primary_alpha else ''
+    plt.savefig(f'water_availability_grouped{suffix}.png', dpi=300, bbox_inches='tight')

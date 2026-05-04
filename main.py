@@ -63,15 +63,29 @@ def time_to_repair(calculate_state):
 
 
 # Cascading Effect Plot- In each time step how many of it dependents became non-functional
-def cascading_effect(graph,calculate_state, failed_index): #TODO: remove the community and generalize
+def get_community_for_node(graph, node_index):
+    """
+    Dynamically determine the community attribute key for a given node index
+    by reading node attributes from the graph. Replaces hardcoded index mapping.
+    :param graph: NetworkX graph
+    :param node_index: Integer index of the node
+    :return: community attribute key string, or None if not found
+    """
+    node_name = list(graph.nodes())[node_index]
+    node_attrs = graph.nodes[node_name]
+    for attr_key, attr_val in node_attrs.items():
+        if isinstance(attr_key, str) and attr_key.startswith('Community') and attr_val == 1:
+            return attr_key
+    return None
+
+
+def cascading_effect(graph, calculate_state, failed_index):
     dep_dict = {}
     for i in failed_index:
-        if i == 3:
-            community = 'Community_1'
-        elif i == 5:
-            community = 'Community_2'
-        else:
-            community = 'Community_3'
+        community = get_community_for_node(graph, i)
+        if community is None:
+            # Skip nodes not assigned to any community
+            continue
         dep = get_dependent_nodes(graph, i, community)
         if i not in dep_dict:
             dep_dict[i] = {}  # Initialize inner dictionary for i if not present
@@ -195,6 +209,8 @@ def monte_carlo_power( infra, alpha, graph, predetermined_steps, lambda_paramete
     # Execute the simulation multiple times
 
     for sim in range(num_simulations):
+        if sim % 100 == 0:
+            print("sim", sim)
         new_states, time_step, failed_index, calculate_state, dns_loss_vals,consumer_list_index = execute_simulation(
             infra, alpha, graph,predetermined_steps, lambda_parameter,
             num_crew, failed_nodes,dns_dict,ratio)
@@ -213,6 +229,7 @@ def monte_carlo_power( infra, alpha, graph, predetermined_steps, lambda_paramete
         average_calc_cumm_over_time = calc_cumm_over_time(calculate_state_list)
 
         cumm_dns_load.append(dns_loss_vals)
+    print("power monte carlo done")
     return total_time_step, average_time_to_repair_failed, cascade_result, average_calc_cumm_over_time, cumm_dns_load, consumer_list_index
 
 def monte_carlo_water(infra, alpha, graph, predetermined_steps, lambda_parameter, num_crew, failed_nodes,
@@ -228,6 +245,8 @@ def monte_carlo_water(infra, alpha, graph, predetermined_steps, lambda_parameter
 
     # Execute the simulation multiple times
     for sim in range(num_simulations):
+        if sim % 100 == 0:
+            print("water sim", sim)
 
 
 
@@ -330,7 +349,14 @@ def main():
     parser.add_argument('--mean', type=float, help='Mean value',required=True)
     parser.add_argument('--num-crews', type=int, help='Number of repair crews',required=True)
     parser.add_argument('--failed-nodes', nargs='+', help='List of failed nodes', required=True)
-    parser.add_argument('--dns-dicts', help='List of demand not served values for each area', nargs='+',required=False, type=int)
+    parser.add_argument('--dns-dicts',
+                        help=(
+                            'Demand Not Served per consumer node, as ResourceName:Value pairs. '
+                            'Example: ElementarySchool1:100 Hospital1:1000 ResidentialBuilding1:200. '
+                            'Each name must exactly match the resource attribute in the graph. '
+                            'Order does not matter — values are matched by name, not position.'
+                        ),
+                        nargs='+', required=False, type=str)
     parser.add_argument('--sims', type=int, help='Number of simulations',default=20)
     parser.add_argument('--ratio', type=float, nargs='+', help='Ratio parameter for alpha "sc"',default=[0.4, 0.6])
 
@@ -349,7 +375,27 @@ def main():
     mean = args.mean
     num_crew = args.num_crews
     failed_nodes = args.failed_nodes
-    dns_dict = args.dns_dicts
+    # Parse --dns-dicts from ResourceName:Value pairs into a lookup dict.
+    # This avoids the fragile positional mapping that silently assigns wrong
+    # DNS values if BFS traversal visits consumer nodes in a different order.
+    # Example input:  ['ElementarySchool1:100', 'Hospital1:1000', ...]
+    # Example output: {'ElementarySchool1': 100, 'Hospital1': 1000, ...}
+    dns_dict = None
+    if args.dns_dicts is not None:
+        dns_dict = {}
+        for item in args.dns_dicts:
+            if ':' not in item:
+                raise ValueError(
+                    f"--dns-dicts entry '{item}' is not in ResourceName:Value format. "
+                    f"Example: ElementarySchool1:100"
+                )
+            resource_name, value = item.split(':', 1)
+            try:
+                dns_dict[resource_name.strip()] = int(value.strip())
+            except ValueError:
+                raise ValueError(
+                    f"--dns-dicts value for '{resource_name}' must be an integer, got '{value}'"
+                )
     sims = args.sims
     ratio = args.ratio
 
@@ -364,32 +410,67 @@ def main():
 
     # Load the graph
     G_hfg = nx.read_graphml(graph_path)
+    print("graph loaded:", G_hfg.number_of_nodes(), "nodes", G_hfg.number_of_edges(), "edges")
     # print(G_hfg)
     if infra == "power":
         total_time_step, average_time_to_repair_failed, cascade_result, average_calc_cumm_over_time, \
         cumm_dns_load,consumer_list_index = monte_carlo_power(infra,alpha, G_hfg , time_steps, mean, num_crew, \
                                                         failed_nodes,dns_dict, sims, ratio)
     elif infra == "water":
-        new_states, time_step, failed_indices, calculate_state2, \
-            storage_values_over_time, time_failure, community_usage_over_time, consumer_list_index,consumer_path_dict= monte_carlo_water(infra,alpha, G_hfg , time_steps, mean, num_crew, \
-                                                        failed_nodes,dns_dict, sims, ratio)
-        total_load = {}
-        for i in  community_usage_over_time:
-            for nd in G_hfg.nodes(data=True):
-                if i == nd[1]["index"]:
-                    total_load[i] = nd[1]["Water_Total_Load"] * (time_step)
-        #print("community_usage_over_time",community_usage_over_time)
-        #print("total_load",total_load,time_step)
+        # Run the simulation for the requested alpha and collect ratio_usage.
+        # Also collect results for all 3 alphas so that Figure 14 (grouped bar
+        # chart comparing Criticality / SVS / Weighted) can be produced in one go.
 
-        ratio_usage = {}
-        for i in community_usage_over_time:
-            ratio_usage[i]= (community_usage_over_time[i])/total_load[i]
+        ALPHA_LABELS = {'c': 'Criticality', 's': 'SVS', 'sc': 'SVS and Criticality'}
+        all_alphas_ratio_usage = {}   # {alpha_label: ratio_usage_dict}
+
+        # Always run all three metrics so Figure 14 can be produced.
+        # The primary alpha requested by the user is still the one used for
+        # Figures 12 and 13.
+        for run_alpha in ['c', 's', 'sc']:
+            new_states, time_step, failed_indices, calculate_state2, \
+                storage_values_over_time, time_failure, community_usage_over_time, \
+                consumer_list_index, consumer_path_dict = monte_carlo_water(
+                    infra, run_alpha, G_hfg, time_steps, mean, num_crew,
+                    failed_nodes, dns_dict, sims, ratio)
+
+            total_load = {}
+            for i in community_usage_over_time:
+                for nd in G_hfg.nodes(data=True):
+                    if i == nd[1]["index"]:
+                        # Use fixed predetermined_steps as denominator, NOT the
+                        # stochastic time_step (max sim length across Monte Carlo runs).
+                        # time_step varies randomly between runs, causing ratio_usage
+                        # to differ even for the same alpha — making Figure 14 bars
+                        # inconsistent across runs. predetermined_steps is fixed and
+                        # makes the ratio stable and comparable across all metrics.
+                        total_load[i] = nd[1]["Water_Total_Load"] * time_steps
+
+            ratio_usage = {}
+            for i in community_usage_over_time:
+                if total_load.get(i, 0) > 0:
+                    ratio_usage[i] = community_usage_over_time[i] / total_load[i]
+                else:
+                    ratio_usage[i] = 0
+
+            all_alphas_ratio_usage[ALPHA_LABELS[run_alpha]] = ratio_usage
+
+            # Keep the results for the user-requested alpha for Figures 12 & 13
+            if run_alpha == alpha:
+                primary_storage_values  = storage_values_over_time
+                primary_time_failure    = time_failure
+                primary_ratio_usage     = ratio_usage
+
+        # Use primary alpha results for single-metric plots (Figs 12 & 13)
+        storage_values_over_time = primary_storage_values
+        time_failure             = primary_time_failure
+        ratio_usage              = primary_ratio_usage
 
 
 
 
     else:
-        "Failed!!"
+        raise ValueError(f"Unknown infrastructure type: '{infra}'. Choose 'power' or 'water'.")
 
 
 
@@ -426,10 +507,19 @@ def main():
         #pass
 
     elif infra == "water":
-        water_storage_available_over_time(G_hfg,storage_values_over_time,order)
-        water_infratructure_failure_over_time(G_hfg, time_failure, order,sims)
-        get_community_usage_over_time(G_hfg,ratio_usage,consumer_list_index,consumer_path_dict,order)
-        #pass
+        # Figure 13 — water storage levels over time (single alpha)
+        water_storage_available_over_time(G_hfg, storage_values_over_time, order)
+
+        # Figure 12 — average repair time per pipeline (single alpha)
+        water_infratructure_failure_over_time(G_hfg, time_failure, order, sims)
+
+        # Figure 14 — grouped bar: all 3 metrics side by side (matches paper).
+        # primary_alpha is included in the filename so each run saves a
+        # separately named file — run with alpha=c, s, and sc to compare all three.
+        plot_water_availability_grouped(
+            all_alphas_ratio_usage, G_hfg, consumer_list_index, consumer_path_dict,
+            primary_alpha=order
+        )
 
 
     # Print or save the results
